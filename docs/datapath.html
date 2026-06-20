@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>RV32IM Pipelined Datapath — Derin Analiz</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    max-width: 1400px;
+    margin: 40px auto;
+    padding: 0 24px;
+    line-height: 1.65;
+    color: #1a1a1a;
+    background: #fafafa;
+  }
+  h1 { border-bottom: 3px solid #0066cc; padding-bottom: 12px; color: #003366; font-size: 2em; }
+  h2 { color: #0066cc; margin-top: 48px; border-left: 5px solid #0066cc; padding-left: 12px; }
+  h3 { color: #003366; margin-top: 28px; }
+  h4 { color: #555; margin-top: 20px; }
+  code, pre {
+    font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+    background: #f0f0f0;
+    border-radius: 4px;
+  }
+  code { padding: 2px 6px; font-size: 0.9em; color: #c0392b; }
+  pre {
+    padding: 14px 18px;
+    overflow-x: auto;
+    border-left: 4px solid #0066cc;
+    background: #2b2b2b;
+    color: #f8f8f2;
+  }
+  pre code { background: transparent; color: inherit; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+    font-size: 0.93em;
+    background: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  th, td { border: 1px solid #d0d0d0; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #0066cc; color: white; font-weight: 600; }
+  tr:nth-child(even) td { background: #f7f9fc; }
+  .mux-box {
+    background: white;
+    border: 2px solid #0066cc;
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin: 20px 0;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+  }
+  .mux-box h4 { margin-top: 0; color: #0066cc; }
+  .warning {
+    background: #fff3cd;
+    border-left: 4px solid #ffc107;
+    padding: 12px 18px;
+    margin: 16px 0;
+  }
+  .insight {
+    background: #e8f4fd;
+    border-left: 4px solid #0066cc;
+    padding: 12px 18px;
+    margin: 16px 0;
+  }
+  .svg-container {
+    background: white;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    overflow-x: auto;
+    margin: 24px 0;
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    font-size: 0.88em;
+    margin: 12px 0;
+  }
+  .legend-item { display: flex; align-items: center; gap: 8px; }
+  .legend-swatch { width: 20px; height: 4px; display: inline-block; }
+</style>
+</head>
+<body>
+
+<h1>RV32IM 5-Aşamalı Pipeline İşlemci — Datapath Derin Analizi</h1>
+
+<p><em>Bu belge, tek-çevrimli RV32IM işlemcimizin tüm datapath'ini modül modül, MUX MUX, koşul koşul açıklar. Amaç: pipeline'a geçmeden önce tüm sinyal akışının zihnimizde net olması.</em></p>
+
+<h2>1. Büyük Resim: 5 Aşamalı Pipeline</h2>
+
+<p>RISC-V (ve çoğu RISC mimarisi) her instruction'ı 5 mantıksal aşamada yürütür:</p>
+
+<table>
+  <tr><th>Aşama</th><th>Kısaltma</th><th>Ne yapar?</th><th>Modüllerimizde karşılığı</th></tr>
+  <tr><td>Instruction Fetch</td><td><b>IF</b></td><td>PC'deki instruction'ı belleği okur</td><td><code>pc.sv</code> + <code>imem.sv</code></td></tr>
+  <tr><td>Instruction Decode</td><td><b>ID</b></td><td>Opcode/funct parse, register oku, immediate oluştur</td><td><code>decoder.sv</code> + <code>regfile.sv</code> + <code>immgen.sv</code> + <code>control_unit.sv</code></td></tr>
+  <tr><td>Execute</td><td><b>EX</b></td><td>ALU / MUL / DIV / Branch karar</td><td><code>alu.sv</code> + <code>mul_div.sv</code> + <code>branch_unit.sv</code></td></tr>
+  <tr><td>Memory Access</td><td><b>MEM</b></td><td>Load/Store (sadece L/S için anlamlı)</td><td><code>dmem.sv</code></td></tr>
+  <tr><td>Writeback</td><td><b>WB</b></td><td>Sonucu register file'a yaz</td><td>Top-level WB MUX + regfile write port</td></tr>
+</table>
+
+<p><b>Tek-çevrimli olmak</b>, bu 5 aşamanın <em>tek bir clock period</em> içine sıkıştırılması demek. Tüm modüller kombinasyonel zincir halinde bağlı, clock edge'de sadece <b>PC</b> ve <b>regfile</b> güncellenir. Bu basit ama yavaş: clock periyodu en uzun "IF→ID→EX→MEM→WB" yolunu kapsayacak kadar uzun olmak zorunda. Pipeline'a geçmemizin motivasyonu tam burada.</p>
+
+<div class="insight">
+<b>Kritik not:</b> Tek-çevrimli tasarımda "sequential" (clock'la güncellenen) sadece <b>3 eleman</b> var:
+<ul>
+  <li><code>pc.sv</code> içindeki PC register'ı (her clock'ta yeni PC)</li>
+  <li><code>regfile.sv</code> içindeki 32 register (yazma sıklığı düşük)</li>
+  <li><code>mul_div.sv</code> içindeki DIV FSM (multi-cycle, sadece DIV/REM için)</li>
+</ul>
+Geri kalan her şey <b>kombinasyonel</b> — clock'tan bağımsız, input değişir değişmez output oluşur.
+</div>
+
+<h2>2. Datapath Şeması</h2>
+
+<div class="legend">
+  <div class="legend-item"><span class="legend-swatch" style="background:#0066cc;"></span> Veri yolu (32-bit)</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#d32f2f;"></span> Kontrol sinyali</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#388e3c;"></span> Adres/PC yolu</div>
+  <div class="legend-item"><span class="legend-swatch" style="background:#f57c00;"></span> Status/flag sinyali</div>
+</div>
+
+<div class="svg-container">
+<svg viewBox="0 0 2640 1660" width="2640" height="1660" xmlns="http://www.w3.org/2000/svg" font-family="-apple-system, Segoe UI, Roboto, sans-serif"><defs><marker id="ar_d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#15387a"/></marker><marker id="ar_c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#c62828"/></marker><marker id="ar_f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#6a1b9a"/></marker><marker id="ar_h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#ef6c00"/></marker><marker id="ar_g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#2e7d32"/></marker><marker id="ar_e" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="#e65100"/></marker></defs><rect width="2640" height="1660" fill="#ffffff"/><rect x="30" y="250" width="400" height="1060" fill="#e7f1fb"/><text x="230.0" y="238" text-anchor="middle" font-size="23" font-weight="bold" fill="#1565c0" >IF</text><rect x="462" y="250" width="468" height="1060" fill="#e9f7ec"/><text x="696.0" y="238" text-anchor="middle" font-size="23" font-weight="bold" fill="#2e7d32" >ID</text><rect x="962" y="250" width="820" height="1060" fill="#fff4e5"/><text x="1372.0" y="238" text-anchor="middle" font-size="23" font-weight="bold" fill="#e65100" >EX</text><rect x="1814" y="250" width="348" height="1060" fill="#f5ecf8"/><text x="1988.0" y="238" text-anchor="middle" font-size="23" font-weight="bold" fill="#6a1b9a" >MEM</text><rect x="2194" y="250" width="420" height="1060" fill="#e4f6f9"/><text x="2404.0" y="238" text-anchor="middle" font-size="23" font-weight="bold" fill="#00838f" >WB</text><rect x="436" y="250" width="22" height="1060" rx="3" fill="#37474f"/><text x="447" y="760" text-anchor="middle" font-size="13" font-weight="bold" fill="#fff" transform="rotate(-90 447 760)">IF / ID</text><rect x="936" y="250" width="22" height="1060" rx="3" fill="#37474f"/><text x="947" y="760" text-anchor="middle" font-size="13" font-weight="bold" fill="#fff" transform="rotate(-90 947 760)">ID / EX</text><rect x="1788" y="250" width="22" height="1060" rx="3" fill="#37474f"/><text x="1799" y="760" text-anchor="middle" font-size="13" font-weight="bold" fill="#fff" transform="rotate(-90 1799 760)">EX / MEM</text><rect x="2168" y="250" width="22" height="1060" rx="3" fill="#37474f"/><text x="2179" y="760" text-anchor="middle" font-size="13" font-weight="bold" fill="#fff" transform="rotate(-90 2179 760)">MEM / WB</text><text x="30" y="42" text-anchor="start" font-size="18" font-weight="bold" fill="#10243f" >RV32IM 5-stage core — detailed datapath (rv32im_core_pipelined.sv)</text><text x="30" y="64" text-anchor="start" font-size="12.5" font-weight="normal" fill="#555" >each box = one .sv module with its real ports;  arrows = RTL signals;  green=PC/branch  purple=forwarding  orange=hazard  navy=data</text><rect x="60" y="300" width="280" height="80" rx="8" fill="#f4f4f4" stroke="#888" stroke-width="2.4" stroke-dasharray="7 5"/><text x="200.0" y="322" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Instruction Memory</text><text x="200.0" y="339" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">external (I-cache)</text><text x="67" y="361" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >ADDR = imem_addr_o</text><circle cx="60" cy="358" r="2.6" fill="#888"/><text x="333" y="361" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >RD = imem_data_i</text><circle cx="340" cy="358" r="2.6" fill="#888"/><rect x="90" y="560" width="250" height="112" rx="8" fill="#fff" stroke="#1565c0" stroke-width="2.4"/><text x="215.0" y="582" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Program Counter</text><text x="215.0" y="599" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_pc · pc.sv</text><text x="97" y="621" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >stall_i</text><circle cx="90" cy="618" r="2.6" fill="#1565c0"/><text x="97" y="637" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >pc_sel_i</text><circle cx="90" cy="634" r="2.6" fill="#1565c0"/><text x="97" y="653" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >branch_target_i</text><circle cx="90" cy="650" r="2.6" fill="#1565c0"/><text x="333" y="621" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >pc_o</text><circle cx="340" cy="618" r="2.6" fill="#1565c0"/><text x="333" y="637" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >pc_plus4_o</text><circle cx="340" cy="634" r="2.6" fill="#1565c0"/><rect x="500" y="300" width="322" height="160" rx="8" fill="#fff" stroke="#2e7d32" stroke-width="2.4"/><text x="661.0" y="322" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Decoder</text><text x="661.0" y="339" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_decoder · decoder.sv</text><text x="507" y="361" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >inst_i [31:0]</text><circle cx="500" cy="358" r="2.6" fill="#2e7d32"/><text x="815" y="361" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >opcode_o</text><circle cx="822" cy="358" r="2.6" fill="#2e7d32"/><text x="815" y="377" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >rd_o</text><circle cx="822" cy="374" r="2.6" fill="#2e7d32"/><text x="815" y="393" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >rs1_o</text><circle cx="822" cy="390" r="2.6" fill="#2e7d32"/><text x="815" y="409" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >rs2_o</text><circle cx="822" cy="406" r="2.6" fill="#2e7d32"/><text x="815" y="425" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >funct3_o</text><circle cx="822" cy="422" r="2.6" fill="#2e7d32"/><text x="815" y="441" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >funct7_o</text><circle cx="822" cy="438" r="2.6" fill="#2e7d32"/><rect x="500" y="540" width="322" height="224" rx="8" fill="#fff" stroke="#2e7d32" stroke-width="2.4"/><text x="661.0" y="562" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Control Unit</text><text x="661.0" y="579" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_ctrl · control_unit.sv</text><text x="507" y="601" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >opcode_i</text><circle cx="500" cy="598" r="2.6" fill="#2e7d32"/><text x="507" y="617" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >funct3_i</text><circle cx="500" cy="614" r="2.6" fill="#2e7d32"/><text x="507" y="633" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >funct7_i</text><circle cx="500" cy="630" r="2.6" fill="#2e7d32"/><text x="815" y="601" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >reg_we_o</text><circle cx="822" cy="598" r="2.6" fill="#2e7d32"/><text x="815" y="617" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >alu_a_sel_o</text><circle cx="822" cy="614" r="2.6" fill="#2e7d32"/><text x="815" y="633" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >alu_b_sel_o</text><circle cx="822" cy="630" r="2.6" fill="#2e7d32"/><text x="815" y="649" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >alu_op_o</text><circle cx="822" cy="646" r="2.6" fill="#2e7d32"/><text x="815" y="665" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >imm_type_o</text><circle cx="822" cy="662" r="2.6" fill="#2e7d32"/><text x="815" y="681" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >mem_we_o</text><circle cx="822" cy="678" r="2.6" fill="#2e7d32"/><text x="815" y="697" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >mem_re_o</text><circle cx="822" cy="694" r="2.6" fill="#2e7d32"/><text x="815" y="713" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >wb_sel_o</text><circle cx="822" cy="710" r="2.6" fill="#2e7d32"/><text x="815" y="729" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >br_type_o</text><circle cx="822" cy="726" r="2.6" fill="#2e7d32"/><text x="815" y="745" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >is_b/jal/jalr/mdiv_o</text><circle cx="822" cy="742" r="2.6" fill="#2e7d32"/><rect x="500" y="788" width="322" height="96" rx="8" fill="#fff" stroke="#2e7d32" stroke-width="2.4"/><text x="661.0" y="810" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Immediate Gen</text><text x="661.0" y="827" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_immgen · immgen.sv</text><text x="507" y="849" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >inst_i [31:0]</text><circle cx="500" cy="846" r="2.6" fill="#2e7d32"/><text x="507" y="865" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >imm_type_i</text><circle cx="500" cy="862" r="2.6" fill="#2e7d32"/><text x="815" y="849" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >imm_o [31:0]</text><circle cx="822" cy="846" r="2.6" fill="#2e7d32"/><rect x="500" y="1010" width="322" height="144" rx="8" fill="#fff" stroke="#2e7d32" stroke-width="2.4"/><text x="661.0" y="1032" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Register File</text><text x="661.0" y="1049" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_regfile · regfile.sv</text><text x="507" y="1071" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >rs1_addr_i</text><circle cx="500" cy="1068" r="2.6" fill="#2e7d32"/><text x="507" y="1087" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >rs2_addr_i</text><circle cx="500" cy="1084" r="2.6" fill="#2e7d32"/><text x="507" y="1103" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >we_i</text><circle cx="500" cy="1100" r="2.6" fill="#2e7d32"/><text x="507" y="1119" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >rd_addr_i</text><circle cx="500" cy="1116" r="2.6" fill="#2e7d32"/><text x="507" y="1135" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >rd_data_i [31:0]</text><circle cx="500" cy="1132" r="2.6" fill="#2e7d32"/><text x="815" y="1071" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >rs1_data_o [31:0]</text><circle cx="822" cy="1068" r="2.6" fill="#2e7d32"/><text x="815" y="1087" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >rs2_data_o [31:0]</text><circle cx="822" cy="1084" r="2.6" fill="#2e7d32"/><polygon points="990,560 1014,573 1014,631 990,644" fill="#dfe6ea" stroke="#455a64" stroke-width="1.8"/><polygon points="990,820 1014,833 1014,891 990,904" fill="#dfe6ea" stroke="#455a64" stroke-width="1.8"/><polygon points="1150,560 1174,573 1174,623 1150,636" fill="#dfe6ea" stroke="#455a64" stroke-width="1.8"/><polygon points="1150,672 1174,685 1174,735 1150,748" fill="#dfe6ea" stroke="#455a64" stroke-width="1.8"/><rect x="1300" y="540" width="270" height="112" rx="8" fill="#ffe0b2" stroke="#e65100" stroke-width="2.4"/><text x="1435.0" y="562" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >ALU</text><text x="1435.0" y="579" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_alu · alu.sv</text><text x="1307" y="601" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >operand_a_i [31:0]</text><circle cx="1300" cy="598" r="2.6" fill="#e65100"/><text x="1307" y="617" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >operand_b_i [31:0]</text><circle cx="1300" cy="614" r="2.6" fill="#e65100"/><text x="1307" y="633" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >alu_op_i</text><circle cx="1300" cy="630" r="2.6" fill="#e65100"/><text x="1563" y="601" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >result_o [31:0]</text><circle cx="1570" cy="598" r="2.6" fill="#e65100"/><text x="1563" y="617" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >zero_o</text><circle cx="1570" cy="614" r="2.6" fill="#e65100"/><rect x="1300" y="760" width="270" height="112" rx="8" fill="#fff" stroke="#e65100" stroke-width="2.4"/><text x="1435.0" y="782" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Branch Comparator</text><text x="1435.0" y="799" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_branch · branch_unit.sv</text><text x="1307" y="821" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >rs1_i [31:0]</text><circle cx="1300" cy="818" r="2.6" fill="#e65100"/><text x="1307" y="837" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >rs2_i [31:0]</text><circle cx="1300" cy="834" r="2.6" fill="#e65100"/><text x="1307" y="853" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >br_type_i</text><circle cx="1300" cy="850" r="2.6" fill="#e65100"/><text x="1563" y="821" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >taken_o</text><circle cx="1570" cy="818" r="2.6" fill="#e65100"/><rect x="1300" y="920" width="270" height="128" rx="8" fill="#fff" stroke="#e65100" stroke-width="2.4"/><text x="1435.0" y="942" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Mul / Div (M-ext)</text><text x="1435.0" y="959" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_mul_div · mul_div.sv</text><text x="1307" y="981" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >start_i</text><circle cx="1300" cy="978" r="2.6" fill="#e65100"/><text x="1307" y="997" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >funct3_i</text><circle cx="1300" cy="994" r="2.6" fill="#e65100"/><text x="1307" y="1013" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >operand_a_i</text><circle cx="1300" cy="1010" r="2.6" fill="#e65100"/><text x="1307" y="1029" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >operand_b_i</text><circle cx="1300" cy="1026" r="2.6" fill="#e65100"/><text x="1563" y="981" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >result_o [31:0]</text><circle cx="1570" cy="978" r="2.6" fill="#e65100"/><text x="1563" y="997" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >busy_o</text><circle cx="1570" cy="994" r="2.6" fill="#e65100"/><text x="1563" y="1013" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >done_o</text><circle cx="1570" cy="1010" r="2.6" fill="#e65100"/><polygon points="1620,580 1644,593 1644,651 1620,664" fill="#dfe6ea" stroke="#455a64" stroke-width="1.8"/><rect x="1850" y="560" width="300" height="128" rx="8" fill="#f4f4f4" stroke="#888" stroke-width="2.4" stroke-dasharray="7 5"/><text x="2000.0" y="582" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Data Memory</text><text x="2000.0" y="599" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">external (D-cache / MMIO)</text><text x="1857" y="621" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >ADDR = dmem_addr_o</text><circle cx="1850" cy="618" r="2.6" fill="#888"/><text x="1857" y="637" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >DATAW = wdata</text><circle cx="1850" cy="634" r="2.6" fill="#888"/><text x="1857" y="653" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >WE / RE</text><circle cx="1850" cy="650" r="2.6" fill="#888"/><text x="1857" y="669" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >FUNC3</text><circle cx="1850" cy="666" r="2.6" fill="#888"/><text x="2143" y="621" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >DATAR = dmem_rdata_i</text><circle cx="2150" cy="618" r="2.6" fill="#888"/><polygon points="1850,860 1874,873 1874,937 1850,950" fill="#dfe6ea" stroke="#455a64" stroke-width="1.8"/><rect x="2250" y="640" width="310" height="80" rx="8" fill="#fff" stroke="#00838f" stroke-width="2.4"/><text x="2405.0" y="662" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Write-back</text><text x="2405.0" y="679" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">wb_rd / wb_rd_data / wb_reg_we</text><text x="2257" y="701" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >memwb_rd_data [31:0]</text><circle cx="2250" cy="698" r="2.6" fill="#00838f"/><text x="2553" y="701" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >-&gt; regfile write</text><circle cx="2560" cy="698" r="2.6" fill="#00838f"/><rect x="500" y="1350" width="400" height="160" rx="8" fill="#fde8e0" stroke="#ef6c00" stroke-width="2.4"/><text x="700.0" y="1372" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Hazard Unit</text><text x="700.0" y="1389" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_hazard · hazard_unit.sv</text><text x="507" y="1411" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >id_rs1_i</text><circle cx="500" cy="1408" r="2.6" fill="#ef6c00"/><text x="507" y="1427" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >id_rs2_i</text><circle cx="500" cy="1424" r="2.6" fill="#ef6c00"/><text x="507" y="1443" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >ex_rd_i</text><circle cx="500" cy="1440" r="2.6" fill="#ef6c00"/><text x="507" y="1459" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >ex_mem_re_i</text><circle cx="500" cy="1456" r="2.6" fill="#ef6c00"/><text x="507" y="1475" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >mdiv_busy_i</text><circle cx="500" cy="1472" r="2.6" fill="#ef6c00"/><text x="507" y="1491" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >mdiv_done_i</text><circle cx="500" cy="1488" r="2.6" fill="#ef6c00"/><text x="893" y="1411" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >stall_pc_o</text><circle cx="900" cy="1408" r="2.6" fill="#ef6c00"/><text x="893" y="1427" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >stall_ifid_o</text><circle cx="900" cy="1424" r="2.6" fill="#ef6c00"/><text x="893" y="1443" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >stall_idex_o</text><circle cx="900" cy="1440" r="2.6" fill="#ef6c00"/><text x="893" y="1459" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >bubble_idex_o</text><circle cx="900" cy="1456" r="2.6" fill="#ef6c00"/><text x="893" y="1475" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >bubble_exmem_o</text><circle cx="900" cy="1472" r="2.6" fill="#ef6c00"/><rect x="1020" y="1350" width="440" height="160" rx="8" fill="#f3e5f5" stroke="#6a1b9a" stroke-width="2.4"/><text x="1240.0" y="1372" text-anchor="middle" font-size="15" font-weight="bold" fill="#10243f" >Forwarding Unit</text><text x="1240.0" y="1389" text-anchor="middle" font-size="10" font-weight="normal" fill="#6a7785" font-style="italic">u_fwd · forwarding_unit.sv</text><text x="1027" y="1411" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >ex_rs1_i</text><circle cx="1020" cy="1408" r="2.6" fill="#6a1b9a"/><text x="1027" y="1427" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >ex_rs2_i</text><circle cx="1020" cy="1424" r="2.6" fill="#6a1b9a"/><text x="1027" y="1443" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >mem_rd_i</text><circle cx="1020" cy="1440" r="2.6" fill="#6a1b9a"/><text x="1027" y="1459" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >mem_reg_we_i</text><circle cx="1020" cy="1456" r="2.6" fill="#6a1b9a"/><text x="1027" y="1475" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >wb_rd_i</text><circle cx="1020" cy="1472" r="2.6" fill="#6a1b9a"/><text x="1027" y="1491" text-anchor="start" font-size="9" font-weight="normal" fill="#1d4e2a" >wb_reg_we_i</text><circle cx="1020" cy="1488" r="2.6" fill="#6a1b9a"/><text x="1453" y="1411" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >fwd_a_o</text><circle cx="1460" cy="1408" r="2.6" fill="#6a1b9a"/><text x="1453" y="1427" text-anchor="end" font-size="9" font-weight="normal" fill="#8a3b12" >fwd_b_o</text><circle cx="1460" cy="1424" r="2.6" fill="#6a1b9a"/><text x="1002.0" y="657" text-anchor="middle" font-size="9" font-weight="normal" fill="#455a64" >fwd_a</text><text x="994" y="579" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >rf</text><text x="994" y="605.0" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >M</text><text x="994" y="631" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >W</text><text x="1002.0" y="917" text-anchor="middle" font-size="9" font-weight="normal" fill="#455a64" >fwd_b</text><text x="994" y="839" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >rf</text><text x="994" y="865.0" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >M</text><text x="994" y="891" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >W</text><text x="1162.0" y="649" text-anchor="middle" font-size="9" font-weight="normal" fill="#455a64" >alu_a_sel</text><text x="1154" y="579" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >rs1</text><text x="1154" y="601.0" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >pc</text><text x="1162.0" y="761" text-anchor="middle" font-size="9" font-weight="normal" fill="#455a64" >alu_b_sel</text><text x="1154" y="691" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >rs2</text><text x="1154" y="713.0" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >imm</text><text x="1632.0" y="677" text-anchor="middle" font-size="9" font-weight="normal" fill="#455a64" >is_mdiv</text><text x="1624" y="599" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >alu</text><text x="1624" y="625.0" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >mdiv</text><text x="1862.0" y="963" text-anchor="middle" font-size="9" font-weight="normal" fill="#455a64" >wb_sel</text><text x="1854" y="879" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >alu</text><text x="1854" y="908.0" text-anchor="start" font-size="8" font-weight="normal" fill="#455a64" >mem</text><polyline points="340,618 380,618 380,358 60,358" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="340,358 350,358 350,400 436,400" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="348" y="470" text-anchor="middle" font-size="9" font-weight="normal" fill="#1a1a1a" >if_inst</text><polyline points="340,634 360,634 360,360 436,360" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="400" y="352" text-anchor="middle" font-size="8.5" font-weight="normal" fill="#1a1a1a" >pc_plus4 -&gt; IF/ID</text><polyline points="458,360 474,360 474,358 500,358" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="466" y="330" text-anchor="start" font-size="9" font-weight="normal" fill="#1a1a1a" >ifid_inst[31:0]</text><polyline points="458,540 470,540 470,846 500,846" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="822,358 470,358 470,598 500,598" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="822,422 462,422 462,614 500,614" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="822,438 466,438 466,630 500,630" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="822,390 842,390 842,1068 500,1068" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="846" y="1054" text-anchor="start" font-size="8.5" font-weight="normal" fill="#2e7d32" >rs1[19:15]</text><polyline points="822,406 852,406 852,1084 500,1084" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="822,662 858,662 858,862 500,862" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><rect x="836" y="560" width="92" height="220" rx="4" fill="none" stroke="#2e7d32" stroke-dasharray="4 3"/><text x="882" y="548" text-anchor="middle" font-size="8.5" font-weight="normal" fill="#2e7d32" >control bundle -&gt; ID/EX</text><polyline points="822,598 838,598" fill="none" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#ar_g)"/><polyline points="822,614 838,614" fill="none" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#ar_g)"/><polyline points="822,630 838,630" fill="none" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#ar_g)"/><polyline points="822,646 838,646" fill="none" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#ar_g)"/><polyline points="822,678 838,678" fill="none" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#ar_g)"/><polyline points="822,694 838,694" fill="none" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#ar_g)"/><polyline points="822,710 838,710" fill="none" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#ar_g)"/><polyline points="822,726 838,726" fill="none" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#ar_g)"/><polyline points="822,742 838,742" fill="none" stroke="#2e7d32" stroke-width="1.5" marker-end="url(#ar_g)"/><polyline points="928,650 936,650" fill="none" stroke="#2e7d32" stroke-width="2.1" marker-end="url(#ar_g)"/><polyline points="822,846 900,846 900,846 936,846" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="822,1068 890,1068 890,1042 936,1042" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="900" y="1036" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >rs1_data[31:0]</text><polyline points="822,1084 886,1084 886,1062 936,1062" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="900" y="1080" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >rs2_data[31:0]</text><polyline points="958,1042 972,1042 972,576 990,576" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="960" y="600" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >idex_rs1_data[31:0]</text><polyline points="958,1062 966,1062 966,836 990,836" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="960" y="860" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >idex_rs2_data[31:0]</text><polyline points="1014,602.0 1080,602.0 1080,576 1150,576" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="1040" y="594" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >ex_rs1_fwd</text><circle cx="1080" cy="602.0" r="3.6" fill="#15387a"/><line x1="1080" y1="602.0" x2="1080" y2="1000" stroke="#15387a" stroke-width="2.1"/><polyline points="1014,862.0 1110,862.0 1110,688 1150,688" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="1040" y="854" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >ex_rs2_fwd</text><circle cx="1110" cy="862.0" r="3.6" fill="#15387a"/><line x1="1110" y1="862.0" x2="1110" y2="1010" stroke="#15387a" stroke-width="2.1"/><polyline points="958,520 1130,520 1130,598.0 1150,598.0" fill="none" stroke="#15387a" stroke-width="2.0" marker-end="url(#ar_d)"/><text x="960" y="514" text-anchor="start" font-size="8.5" font-weight="normal" fill="#2e7d32" >idex_pc</text><polyline points="958,700 1126,700 1126,710.0 1150,710.0" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="960" y="716" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >idex_imm</text><polyline points="1174,598.0 1255,598.0 1255,598 1300,598" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="1174,710.0 1250,710.0 1250,614 1300,614" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="1080,790 1255,790 1255,818 1300,818" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="1110,880 1240,880 1240,834 1300,834" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="1080,960 1255,960 1255,1010 1300,1010" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="1110,980 1240,980 1240,1026 1300,1026" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><polyline points="1570,598 1600,598 1600,596 1620,596" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="1576" y="560" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >ex_alu_result</text><polyline points="1570,978 1590,978 1590,622.0 1620,622.0" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="1576" y="980" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >ex_mdiv_result</text><polyline points="1644,622.0 1700,622.0 1700,640 1788,640" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="1660" y="634" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >ex_result_final[31:0]</text><polyline points="1570,818 1650,818" fill="none" stroke="#e65100" stroke-width="2.1" marker-end="url(#ar_e)"/><text x="1576" y="790" text-anchor="start" font-size="8.5" font-weight="normal" fill="#e65100" >ex_br_taken_raw</text><polyline points="1650,818 1650,200 200,200 200,560" fill="none" stroke="#2e7d32" stroke-width="2.1" marker-end="url(#ar_g)"/><text x="900" y="194" text-anchor="start" font-size="11" font-weight="normal" fill="#2e7d32" >ex_branch_taken / ex_branch_target  -&gt;  u_pc.pc_sel_i, branch_target_i   +   flush_ifid / flush_idex</text><polyline points="1110,1010 1110,1130 1788,1130" fill="none" stroke="#15387a" stroke-width="2.0" marker-end="url(#ar_d)"/><text x="1180" y="1124" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >exmem_rs2_data = dmem_wdata_o</text><polyline points="1810,640 1832,640 1832,618 1850,618" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="1700" y="634" text-anchor="start" font-size="8.5" font-weight="normal" fill="#15387a" >exmem_alu_result[31:0]</text><polyline points="1810,720 1835,720 1835,876 1850,876" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="1700" y="714" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >exmem_alu_result</text><polyline points="2150,618 2170,618 2170,905.0 1850,905.0" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="2100" y="650" text-anchor="end" font-size="8.5" font-weight="normal" fill="#1a1a1a" >dmem_rdata_i[31:0]</text><polyline points="1874,905.0 1980,905.0 1980,905 2168,905" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="1900" y="900" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >mem_wb_data[31:0]</text><text x="1830" y="1010" text-anchor="start" font-size="9" font-weight="normal" fill="#6a1b9a" >mem_stall = exmem_valid &amp; (mem_re|mem_we) &amp; !dmem_ready_i</text><polyline points="2190,905 2220,905 2220,698 2250,698" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="2150" y="900" text-anchor="start" font-size="8.5" font-weight="normal" fill="#1a1a1a" >memwb_rd_data</text><polyline points="2560,698 2600,698 2600,1560 660,1560 660,1035" fill="none" stroke="#15387a" stroke-width="2.1" marker-end="url(#ar_d)"/><text x="1300" y="1554" text-anchor="middle" font-size="11" font-weight="normal" fill="#15387a" >wb_rd_data / wb_rd / wb_reg_we  -&gt;  Register File write port (we_i, rd_addr_i, rd_data_i)  +  WB-&gt;ID bypass  +  Forwarding Unit</text><polyline points="660,1300 640,1300 640,1132 500,1132" fill="none" stroke="#15387a" stroke-width="1.8" marker-end="url(#ar_d)"/><polyline points="640,1300 620,1300 620,1100 500,1100" fill="none" stroke="#15387a" stroke-width="1.8" marker-end="url(#ar_d)"/><polyline points="1460,1408 1200,1408 1200,644 1002.0,644" fill="none" stroke="#6a1b9a" stroke-width="2.1" stroke-dasharray="7 5" marker-end="url(#ar_f)"/><polyline points="1460,1424 1240,1424 1240,904 1002.0,904" fill="none" stroke="#6a1b9a" stroke-width="2.1" stroke-dasharray="7 5" marker-end="url(#ar_f)"/><polyline points="1874,905 1730,905 1730,1200 962,1200 962,628 990,628" fill="none" stroke="#6a1b9a" stroke-width="2.1" stroke-dasharray="7 5" marker-end="url(#ar_f)"/><text x="1200" y="1194" text-anchor="start" font-size="9" font-weight="normal" fill="#6a1b9a" >mem_wb_data (FWD_FROM_M)</text><polyline points="2560,698 2560,1240 950,1240 950,888 990,888" fill="none" stroke="#6a1b9a" stroke-width="2.1" stroke-dasharray="7 5" marker-end="url(#ar_f)"/><text x="1200" y="1234" text-anchor="start" font-size="9" font-weight="normal" fill="#6a1b9a" >wb_rd_data (FWD_FROM_W)</text><polyline points="900,1408 470,1408 470,618 90,618" fill="none" stroke="#ef6c00" stroke-width="2.1" stroke-dasharray="6 5" marker-end="url(#ar_h)"/><polyline points="900,1424 447,1424 447,250" fill="none" stroke="#ef6c00" stroke-width="2.1" stroke-dasharray="6 5" marker-end="url(#ar_h)"/><text x="420" y="1320" text-anchor="middle" font-size="8.5" font-weight="normal" fill="#b35400" >stall_ifid/flush -&gt; IF/ID</text><polyline points="900,1440 947,1440 947,250" fill="none" stroke="#ef6c00" stroke-width="2.1" stroke-dasharray="6 5" marker-end="url(#ar_h)"/><text x="700" y="1305" text-anchor="middle" font-size="8.5" font-weight="normal" fill="#b35400" >stall_idex/bubble -&gt; ID/EX</text><polyline points="900,1472 1799,1472 1799,250" fill="none" stroke="#ef6c00" stroke-width="2.1" stroke-dasharray="6 5" marker-end="url(#ar_h)"/><text x="1300" y="1290" text-anchor="middle" font-size="8.5" font-weight="normal" fill="#b35400" >bubble_exmem -&gt; EX/MEM</text><polyline points="1570,994 540,994 540,1472 500,1472" fill="none" stroke="#ef6c00" stroke-width="2.1" stroke-dasharray="6 5" marker-end="url(#ar_h)"/></svg>
+</div>
+
+<p class="warning"><b>Okuma ipucu:</b> Şemadaki renkli arka planlar (IF/ID/EX/MEM/WB) sinyallerin "hangi mantıksal aşamada" üretildiğini gösterir. Tek-çevrimli işlemcide fiziksel olarak bir register ile ayrılmazlar (pipeline'a geçtiğimizde oraya pipeline register'ları koyacağız). Kırmızı noktalı çizgiler <b>kontrol sinyalleri</b>dir — bunlar MUX'ların seçim girişlerine ve fonksiyonel birimlerin modlarına gider.</p>
+
+<h2>3. Modüller Teker Teker</h2>
+
+<h3>3.1 <code>pc.sv</code> — Program Counter</h3>
+
+<p>Program Counter, bir sonraki fetch edilecek instruction'ın adresini tutan 32-bit bir register'dır. Reset'te <code>RESET_VECTOR</code> (= 0) değerine çekilir. Her clock edge'de yeni PC değerini içeri alır.</p>
+
+<p>İçinde iki önemli kombinasyonel parça var:</p>
+
+<ul>
+<li><b>PC+4 adder:</b> 32-bit adder. Çıkışı hem kullanıcıya (JAL/JALR link register için) verilir hem de MUX'un ilk girdisidir.</li>
+<li><b>Next-PC MUX:</b> 3:1 MUX. Aşağıdaki tabloda seçim kuralları.</li>
+</ul>
+
+<div class="mux-box">
+<h4>MUX 1 — Next-PC MUX (pc_sel, 2-bit)</h4>
+<table>
+  <tr><th>pc_sel değeri</th><th>Enum adı</th><th>Seçilen giriş</th><th>Ne zaman?</th></tr>
+  <tr><td>00</td><td><code>PC_PLUS4</code></td><td>PC + 4</td><td>Her normal instruction (ADDI, ADD, MUL, LW, SW, branch-not-taken, vs.)</td></tr>
+  <tr><td>01</td><td><code>PC_BRANCH</code></td><td>alu_result (= PC + imm)</td><td>BEQ/BNE/BLT/BGE/BLTU/BGEU taken, ya da JAL (koşulsuz)</td></tr>
+  <tr><td>10</td><td><code>PC_JALR</code></td><td>alu_result & ~1 (= rs1 + imm, LSB temizlenmiş)</td><td>JALR instruction</td></tr>
+</table>
+
+<p><b>Kontrol mantığı</b> (rv32im_core.sv, satır 182-187):</p>
+<pre><code>if (is_jalr)                     pc_sel = PC_JALR;
+else if (is_jal)                 pc_sel = PC_BRANCH;
+else if (is_branch &amp;&amp; br_taken)  pc_sel = PC_BRANCH;
+else                             pc_sel = PC_PLUS4;</code></pre>
+
+<p><b>Neden bu sıra önemli?</b> Öncelik sırası JALR &gt; JAL &gt; conditional branch &gt; default. Birden fazla koşul aynı anda doğru olamaz (instruction tek türden olur) ama if-else zinciri yazılımsal olarak tek bir <code>pc_sel</code> atama garantiler.</p>
+
+<p><b>Tuzak:</b> JALR'da LSB'yi (&amp; ~1) <em>neden</em> maskeliyoruz? Çünkü RISC-V ISA spec'i JALR için son bitin göz ardı edilmesini zorunlu kılar (align hatası oluşturmamak için). Assembler sometimes encodes odd targets.</p>
+</div>
+
+<h3>3.2 <code>imem.sv</code> — Instruction Memory</h3>
+
+<p>Kombinasyonel okuma yapan bir bellek. Adres girişi olarak PC alır, 32-bit instruction döner. Gerçek FPGA'de bu BRAM'e map olur; simulation'da <code>$readmemh("program.hex")</code> ile başlangıçta doldurulur.</p>
+
+<p>Kritik detay: <b>word-addressed</b>. Yani 32-bit PC değerinin alt 2 biti ignore edilir (<code>addr_i[ADDR_W+1:2]</code>). Çünkü RISC-V instruction'ları 4-byte aligned.</p>
+
+<h3>3.3 <code>decoder.sv</code> — Instruction Decoder</h3>
+
+<p>Hiçbir <em>mantık</em> yok, sadece <b>bit-slicing</b>. Gelen 32-bit instruction'dan alan çıkarır:</p>
+
+<table>
+  <tr><th>Alan</th><th>Bit aralığı</th><th>Kullanım</th></tr>
+  <tr><td>opcode</td><td>[6:0]</td><td>Instruction tipini belirler (R/I/S/B/U/J)</td></tr>
+  <tr><td>rd</td><td>[11:7]</td><td>Destination register adresi (5-bit)</td></tr>
+  <tr><td>funct3</td><td>[14:12]</td><td>Alt-operasyon seçimi (örn. ADD vs SLT)</td></tr>
+  <tr><td>rs1</td><td>[19:15]</td><td>Source register 1 adresi</td></tr>
+  <tr><td>rs2</td><td>[24:20]</td><td>Source register 2 adresi</td></tr>
+  <tr><td>funct7</td><td>[31:25]</td><td>R-type alt-operasyon (SUB vs ADD, SRA vs SRL, M-ext)</td></tr>
+</table>
+
+<p>Decoder her instruction'da bu alanların <em>hepsini</em> çeker, ama instruction tipine göre bazıları anlamsız olabilir (örn. U-type'ta rs2 alanının bit aralığı immediate'ın parçasıdır).</p>
+
+<h3>3.4 <code>control_unit.sv</code> — Kontrol Birimi</h3>
+
+<p>Datapath'in "beyni". Opcode + funct3 + funct7 kombinasyonundan, datapath'te hangi MUX'un ne seçeceğine, hangi birimin enable olacağına karar verir.</p>
+
+<p>Ürettiği 11 kontrol sinyali:</p>
+
+<table>
+  <tr><th>Sinyal</th><th>Tip</th><th>Nereye gider?</th><th>Anlamı</th></tr>
+  <tr><td><code>reg_we</code></td><td>1-bit</td><td>regfile write enable</td><td>1 = rd register'a yaz</td></tr>
+  <tr><td><code>alu_a_sel</code></td><td>1-bit</td><td>ALU A MUX</td><td>0=rs1, 1=PC</td></tr>
+  <tr><td><code>alu_b_sel</code></td><td>1-bit</td><td>ALU B MUX</td><td>0=rs2, 1=imm</td></tr>
+  <tr><td><code>alu_op</code></td><td>4-bit enum</td><td>ALU</td><td>Hangi ALU operasyonu (ADD/SUB/AND/OR/...)</td></tr>
+  <tr><td><code>imm_type</code></td><td>3-bit enum</td><td>Immgen</td><td>I/S/B/U/J hangi formatla decode</td></tr>
+  <tr><td><code>mem_we</code></td><td>1-bit</td><td>DMEM</td><td>1 = store (SB/SH/SW)</td></tr>
+  <tr><td><code>mem_re</code></td><td>1-bit</td><td>DMEM</td><td>1 = load (LB/LH/LW/LBU/LHU)</td></tr>
+  <tr><td><code>wb_sel</code></td><td>2-bit enum</td><td>Writeback MUX</td><td>Hangi kaynak rd'ye yazılır</td></tr>
+  <tr><td><code>is_branch</code></td><td>1-bit</td><td>PC-sel mantığı</td><td>Branch opcode mu?</td></tr>
+  <tr><td><code>is_jal</code></td><td>1-bit</td><td>PC-sel mantığı</td><td>JAL mi?</td></tr>
+  <tr><td><code>is_jalr</code></td><td>1-bit</td><td>PC-sel mantığı</td><td>JALR mi?</td></tr>
+  <tr><td><code>br_type</code></td><td>3-bit enum</td><td>Branch Unit</td><td>EQ/NE/LT/GE/LTU/GEU</td></tr>
+  <tr><td><code>is_mdiv</code></td><td>1-bit</td><td>Mul/Div FSM + WB MUX inner</td><td>M-extension mi? (MUL/DIV/REM)</td></tr>
+</table>
+
+<div class="insight">
+<b>Pedagojik nokta:</b> Control Unit <b>tamamen kombinasyonel</b>. State tutmuyor. Her instruction için aynı kodlama kuralları uygulanır — bu bir <em>lookup tablosu</em> gibidir. Pipeline'a geçtiğimizde bu kontrol sinyalleri pipeline register'larına aynen kopyalanacak, her stage'e hangi sinyal gerekiyorsa o alınacak.
+</div>
+
+<h3>3.5 <code>immgen.sv</code> — Immediate Generator</h3>
+
+<p>Gelen 32-bit instruction'dan <em>5 farklı formatta</em> immediate çıkarır. Neden 5 farklı format? Çünkü RISC-V her instruction tipinde immediate bit-layout'unu farklı koymuş — opcode'un decode kolaylığı uğruna.</p>
+
+<table>
+  <tr><th>Format</th><th>Örnek inst</th><th>Immediate yapısı</th><th>Sign-extend bit'i</th></tr>
+  <tr><td>I-type</td><td>ADDI, LW, JALR</td><td><code>{{20{inst[31]}}, inst[31:20]}</code></td><td>inst[31]</td></tr>
+  <tr><td>S-type</td><td>SW, SH, SB</td><td><code>{{20{inst[31]}}, inst[31:25], inst[11:7]}</code></td><td>inst[31]</td></tr>
+  <tr><td>B-type</td><td>BEQ, BNE</td><td><code>{{19{inst[31]}}, inst[31], inst[7], inst[30:25], inst[11:8], 1'b0}</code></td><td>inst[31]</td></tr>
+  <tr><td>U-type</td><td>LUI, AUIPC</td><td><code>{inst[31:12], 12'b0}</code></td><td>—</td></tr>
+  <tr><td>J-type</td><td>JAL</td><td><code>{{11{inst[31]}}, inst[31], inst[19:12], inst[20], inst[30:21], 1'b0}</code></td><td>inst[31]</td></tr>
+</table>
+
+<p><b>B ve J format'ta neden bit dağıtılmış?</b> Çünkü branch hedefi 2-byte align'dir (LSB her zaman 0) ve bu 1 biti immediate'tan tasarruf edersiniz. Kaydırılmış bit pozisyonları, hardware decode'u karmaşıklaştırır ama kodlama alanı kazandırır.</p>
+
+<h3>3.6 <code>regfile.sv</code> — Register File</h3>
+
+<p>32 × 32-bit register dizisi. <b>2 okuma portu</b> (rs1, rs2 aynı anda okunur, kombinasyonel) + <b>1 yazma portu</b> (synchronous, clock edge'de).</p>
+
+<p>Özel davranışlar:</p>
+<ul>
+<li><b>x0 = 0 (hardwired):</b> Okuma 0, yazma ignore. <code>x0</code>'a yazamazsınız.</li>
+<li><b>Write-before-read:</b> Aynı cycle'da hem okunursa hem yazılırsa, <em>eski değer okunur</em>. Bu tek-çevrimde sorun değil (okuma ID aşamasında, yazma WB aşamasında, aynı cycle'da hiç çakışmaz). Pipeline'da "RAW hazard" diye anılacak ve forwarding ile çözülecek.</li>
+</ul>
+
+<h3>3.7 <code>alu.sv</code> — Aritmetik-Mantık Birimi</h3>
+
+<p>Tamamen kombinasyonel. 11 operasyon destekler: ADD, SUB, SLL, SLT (signed), SLTU (unsigned), XOR, SRL, SRA (arithmetic shift-right), OR, AND, PASSB (LUI için).</p>
+
+<p>Kritik detay: <b>shift amount 5-bit</b>. <code>shamt = operand_b[4:0]</code>. RISC-V RV32'de shift miktarı maksimum 31. Eğer 32-bit değeri aynen kullansanız 32 bit shift gibi tehlikeli durumlar çıkar.</p>
+
+<h3>3.8 <code>mul_div.sv</code> — M-extension</h3>
+
+<p>İki ayrı devre tek modül içinde:</p>
+
+<h4>MUL grubu (kombinasyonel)</h4>
+<p>3 ayrı çarpma devresi paralelde çalışır: signed×signed, unsigned×unsigned, signed×unsigned. Funct3'e göre çıkış seçilir (MUL/MULH/MULHU/MULHSU). Xilinx 7-series FPGA'de bunlar <b>DSP48 bloklarına</b> map olur — 1 cycle'da hazır.</p>
+
+<h4>DIV/REM grubu (32-cycle FSM)</h4>
+<p>Restoring division algorithm, 3 state'li FSM: <code>IDLE → BUSY → DONE</code>. BUSY state'inde 32 iterasyon yapılır (her cycle 1 bit quotient üretir). Bu sırada <code>busy_o=1</code> çıkışı CPU'nun PC'sini donduran <b>stall</b> sinyalidir.</p>
+
+<p><b>İşaret düzeltmeleri:</b> Signed DIV için absolute value alınır, ana algoritma unsigned çalışır, sonra sonuç ve remainder işaretleri düzeltilir. Bölenin işareti (abs_b) yerine quotient işareti (neg_quot = rs1_sign ^ rs2_sign) hesaplanır.</p>
+
+<h3>3.9 <code>branch_unit.sv</code> — Branch Kararı</h3>
+
+<p>İki 32-bit değeri karşılaştırır ve bir 1-bit <code>taken</code> sinyali üretir. br_type enum'u EQ/NE/LT/GE/LTU/GEU arasından seçer. SLT ve SLTU ile aynı mantık (signed vs unsigned compare).</p>
+
+<p><b>Önemli:</b> Branch unit <em>sadece</em> karar verir. Hedefi hesaplamaz — onu ALU zaten <code>PC + imm</code> olarak hesaplıyor (alu_a_sel=PC, alu_b_sel=IMM ile).</p>
+
+<h3>3.10 <code>dmem.sv</code> — Data Memory</h3>
+
+<p>Byte-addressable, word-aligned data memory. funct3 ile access size belirlenir:</p>
+
+<table>
+  <tr><th>funct3</th><th>Opcode</th><th>Ne yapar?</th></tr>
+  <tr><td>000</td><td>LB / SB</td><td>Byte, signed-extend (LB)</td></tr>
+  <tr><td>001</td><td>LH / SH</td><td>Half-word, signed-extend (LH)</td></tr>
+  <tr><td>010</td><td>LW / SW</td><td>Word, as-is</td></tr>
+  <tr><td>100</td><td>LBU</td><td>Byte, zero-extend</td></tr>
+  <tr><td>101</td><td>LHU</td><td>Half-word, zero-extend</td></tr>
+</table>
+
+<p>Write byte-strobes ile çalışır: sadece ilgili byte(lar) yazılır, diğerleri dokunulmaz. Read kombinasyonel, Write synchronous.</p>
+
+<h2>4. MUX Kataloğu — Tüm Seçicilerin Detaylı Analizi</h2>
+
+<p>Tek-çevrimli datapath'ta toplam <b>4 temel MUX</b> + 1 tane dahili "ALU vs MUL/DIV" seçici var. Her birini tek tek gezelim.</p>
+
+<div class="mux-box">
+<h4>MUX 1 — Next-PC MUX</h4>
+<p><b>Konum:</b> <code>pc.sv</code> modülü içinde, PC register'ının <em>input</em>'una bağlı.</p>
+<p><b>Seçim sinyali:</b> <code>pc_sel</code> (2-bit, enum: <code>pc_sel_e</code>)</p>
+<p><b>Girdiler:</b> PC+4 / branch_target / jalr_target</p>
+<p><b>Ürettiği kontrol:</b> Top-level her cycle if-else chain (yukarıda gösterildi).</p>
+<p><b>Tipik atama örnekleri:</b></p>
+<table>
+  <tr><th>Instruction</th><th>is_branch</th><th>is_jal</th><th>is_jalr</th><th>br_taken</th><th>pc_sel</th></tr>
+  <tr><td>ADDI</td><td>0</td><td>0</td><td>0</td><td>x</td><td>PC_PLUS4</td></tr>
+  <tr><td>BEQ (x1==x2)</td><td>1</td><td>0</td><td>0</td><td>1</td><td>PC_BRANCH</td></tr>
+  <tr><td>BEQ (x1≠x2)</td><td>1</td><td>0</td><td>0</td><td>0</td><td>PC_PLUS4</td></tr>
+  <tr><td>JAL</td><td>0</td><td>1</td><td>0</td><td>x</td><td>PC_BRANCH</td></tr>
+  <tr><td>JALR</td><td>0</td><td>0</td><td>1</td><td>x</td><td>PC_JALR</td></tr>
+</table>
+</div>
+
+<div class="mux-box">
+<h4>MUX 2 — ALU A MUX (alu_a_sel)</h4>
+<p><b>Konum:</b> <code>rv32im_core.sv</code>, ALU'nun <em>operand_a</em> girişinden önce.</p>
+<p><b>Seçim sinyali:</b> <code>alu_a_sel</code> (1-bit, enum)</p>
+<table>
+  <tr><th>alu_a_sel</th><th>Enum</th><th>Seçilen</th><th>Ne zaman?</th></tr>
+  <tr><td>0</td><td><code>ALU_A_RS1</code></td><td>rs1_data</td><td>R-type, I-type, Load, Store, Branch, JALR, MUL/DIV</td></tr>
+  <tr><td>1</td><td><code>ALU_A_PC</code></td><td>pc_cur</td><td>AUIPC, JAL, Branch target hesabı</td></tr>
+</table>
+<p><b>Neden PC'yi ALU'ya sokuyoruz?</b> Çünkü branch hedefi = PC + imm, JAL hedefi = PC + imm, AUIPC sonucu = PC + (imm &lt;&lt; 12). Bunların hepsi bir toplama işlemi — ALU zaten var, neden ikinci bir adder ekleyelim? Alan/güç tasarrufu için ALU'yu yeniden kullanırız.</p>
+<p><b>İlk kafa karıştırıcı durum:</b> Branch instruction'ı yürütürken ALU <em>iki farklı iş</em> yapmaz. Sadece bir iş yapar: PC+imm hesabı. Branch unit (branch_unit.sv) <em>ayrı</em> devre olarak rs1 vs rs2 karşılaştırmasını yapar. ALU'nun çıkışı sadece target adres olarak kullanılır.</p>
+</div>
+
+<div class="mux-box">
+<h4>MUX 3 — ALU B MUX (alu_b_sel)</h4>
+<p><b>Konum:</b> <code>rv32im_core.sv</code>, ALU'nun <em>operand_b</em> girişinden önce.</p>
+<p><b>Seçim sinyali:</b> <code>alu_b_sel</code> (1-bit, enum)</p>
+<table>
+  <tr><th>alu_b_sel</th><th>Enum</th><th>Seçilen</th><th>Ne zaman?</th></tr>
+  <tr><td>0</td><td><code>ALU_B_RS2</code></td><td>rs2_data</td><td>R-type (ADD, SUB, SLT...), MUL/DIV</td></tr>
+  <tr><td>1</td><td><code>ALU_B_IMM</code></td><td>imm</td><td>I-type (ADDI, ANDI...), Load address, Store address, Branch target, JAL/JALR, LUI, AUIPC</td></tr>
+</table>
+<p><b>Genel kural:</b> Immediate kullanan her instruction <code>alu_b_sel = ALU_B_IMM</code>. Sadece R-type (register-register aritmetik) ve M-ext operand'ları register'dan gelir.</p>
+</div>
+
+<div class="mux-box">
+<h4>MUX 4 — Writeback MUX (wb_sel)</h4>
+<p><b>Konum:</b> <code>rv32im_core.sv</code> sonunda, regfile'ın <code>rd_data</code> yazma portuna.</p>
+<p><b>Seçim sinyali:</b> <code>wb_sel</code> (2-bit, enum)</p>
+<table>
+  <tr><th>wb_sel</th><th>Enum</th><th>Seçilen</th><th>Ne zaman?</th></tr>
+  <tr><td>00</td><td><code>WB_ALU</code></td><td>alu_result (veya mdiv_result)</td><td>R-type, I-type aritmetik, LUI, AUIPC, M-ext</td></tr>
+  <tr><td>01</td><td><code>WB_MEM</code></td><td>dmem_rdata_i</td><td>Load instruction'ları (LB/LH/LW/LBU/LHU)</td></tr>
+  <tr><td>10</td><td><code>WB_PC4</code></td><td>pc_plus4</td><td>JAL ve JALR (link register, x1 = PC+4)</td></tr>
+  <tr><td>11</td><td><code>WB_IMM</code></td><td>imm</td><td>(Kullanılmıyor şu anda; LUI aslında ALU_PASSB ile çalışıyor)</td></tr>
+</table>
+<p><b>İç içe MUX:</b> WB_ALU seçildiğinde, <em>dahili</em> bir 2:1 MUX daha var: <code>is_mdiv ? mdiv_result : alu_result</code>. Neden? Çünkü MUL/DIV sonucu ayrı bir modülde üretilir (mul_div.sv), ama aynı yazma portundan yazılır.</p>
+<pre><code>always_comb begin
+    unique case (wb_sel)
+        WB_ALU : rd_data = is_mdiv ? mdiv_result : alu_result;
+        WB_MEM : rd_data = dmem_rdata_i;
+        WB_PC4 : rd_data = pc_plus4;
+        WB_IMM : rd_data = imm;
+        default: rd_data = alu_result;
+    endcase
+end</code></pre>
+</div>
+
+<h2>5. Kritik Koşul (Condition) Analizleri</h2>
+
+<p>Datapath'taki tüm "if" ve koşullu davranışları tek yerde toplayalım. Bunlar kafa karıştıran noktalardır.</p>
+
+<h3>5.1 Register Write Enable Gating</h3>
+
+<pre><code>wire reg_we_gated = reg_we && !mdiv_busy && (!is_mdiv || mdiv_done);</code></pre>
+
+<p>Bu satır üç koşulun AND'i. Parçalayalım:</p>
+<ul>
+  <li><code>reg_we</code>: Control Unit, bu instruction bir rd'ye yazacak diyor mu? (ADDI yazar, SW yazmaz.)</li>
+  <li><code>!mdiv_busy</code>: M-ext FSM şu anda BUSY değil mi? (DIV'in ortasında rd'yi kirletmek istemeyiz.)</li>
+  <li><code>(!is_mdiv || mdiv_done)</code>: M-ext komutu DEĞİLSE doğrudan izin ver; M-ext ise ancak DONE olduğunda izin ver.</li>
+</ul>
+
+<p><b>Gerçek dünya senaryosu:</b> DIV instruction'ı yürütüldüğünde:
+<ul>
+<li>Cycle 0: start_i=1, state IDLE → BUSY'e geçer, busy_o=1. PC stall. reg_we_gated = 0 (busy yüksek).</li>
+<li>Cycle 1-31: state BUSY. busy_o=1, done_o=0. reg_we_gated = 0.</li>
+<li>Cycle 32: state DONE. busy_o=0, done_o=1. reg_we_gated = 1 → rd yazılır.</li>
+<li>Cycle 33: state IDLE. Bir sonraki instruction'a geçiş.</li>
+</ul>
+
+<h3>5.2 Stall Sinyali</h3>
+
+<pre><code>assign stall = mdiv_busy;</code></pre>
+
+<p>Şu anda tek stall kaynağı M-ext'in DIV FSM'si. Stall=1 iken PC dondurulur (<code>pc.sv</code> içinde <code>stall_i</code> ile). Pipeline'a geçtiğimizde stall kaynakları artacak:</p>
+<ul>
+  <li>Load-use hazard (EX bağımlı ve load henüz tamamlanmadı)</li>
+  <li>Memory access not ready (cache miss)</li>
+  <li>Structural hazard (port contention)</li>
+</ul>
+
+<h3>5.3 DMEM Write Enable</h3>
+
+<pre><code>assign dmem_we_o = mem_we && !stall;</code></pre>
+
+<p>Store instruction'ı yürütülüyorsa (mem_we=1) ve stall yoksa yazma izin ver. DIV sırasında store varsa, stall=1 olduğu için yazma engellenir — ancak aslında DIV komutu zaten EX'te olduğu için aynı cycle'da store zaten olmaz. Defensive coding.</p>
+
+<h3>5.4 Branch Target vs JALR Target Maskesi</h3>
+
+<pre><code>assign branch_target = alu_result;
+assign jalr_target   = alu_result &amp; ~32'd1;</code></pre>
+
+<p>Branch/JAL için ALU sonucu doğrudan kullanılır. JALR için <b>LSB silinir</b> (spec gereği). Bu iki ayrı sinyal, PC MUX'a iki ayrı girdi olarak gider.</p>
+
+<h2>6. Instruction Walkthrough — Datapath'te Yolculuk</h2>
+
+<p>Şimdi 5 farklı instruction tipini datapath üzerinde adım adım yürütelim. Programımızdan gerçek örnekler kullanıyoruz.</p>
+
+<h3>6.1 ADDI x1, x0, 5 (I-type aritmetik)</h3>
+
+<p>Encoding: <code>0x00500093</code></p>
+<ol>
+  <li><b>IF:</b> PC=0x00. IMEM[0]=0x00500093 okunur.</li>
+  <li><b>ID:</b>
+    <ul>
+      <li>Decoder: opcode=0010011 (OP_IMM), rd=1, rs1=0, funct3=0 (ADD)</li>
+      <li>Immgen: imm_type=I → imm = sign-ext(12'h005) = 32'd5</li>
+      <li>Regfile: rs1_data = reg[0] = 0</li>
+      <li>Control Unit: reg_we=1, alu_a_sel=RS1, alu_b_sel=IMM, alu_op=ADD, wb_sel=ALU, mem_we=0, mem_re=0, is_branch=0, is_jal=0, is_jalr=0, is_mdiv=0</li>
+    </ul>
+  </li>
+  <li><b>EX:</b> ALU_A=0, ALU_B=5, ALU_OP=ADD → alu_result = 5</li>
+  <li><b>MEM:</b> Memory erişimi yok (mem_we=0, mem_re=0).</li>
+  <li><b>WB:</b> wb_sel=ALU, is_mdiv=0 → rd_data = alu_result = 5. Clock edge'de reg[1] = 5.</li>
+  <li><b>PC update:</b> pc_sel=PC_PLUS4 → PC = 0x04.</li>
+</ol>
+
+<h3>6.2 MUL x4, x1, x2 (R-type M-extension)</h3>
+
+<p>Encoding: <code>0x022080b3</code></p>
+<ol>
+  <li><b>IF:</b> PC=0x0c. IMEM[3]=0x022080b3.</li>
+  <li><b>ID:</b>
+    <ul>
+      <li>Decoder: opcode=0110011 (OP_RTYPE), rd=4, rs1=1, rs2=2, funct3=0 (MUL), funct7=0000001 (M-ext)</li>
+      <li>Control Unit: <b>is_mdiv=1</b> (çünkü funct7=0000001), reg_we=1, alu_a_sel=RS1, alu_b_sel=RS2, alu_op=ADD (irrelevant), wb_sel=ALU</li>
+    </ul>
+  </li>
+  <li><b>EX:</b>
+    <ul>
+      <li>ALU hâlâ çalışıyor (rs1+rs2=15), ama sonucu kullanılmayacak</li>
+      <li>Mul_div modülü: is_mul=1 (funct3[2]=0), kombinasyonel olarak mul_result = 5*10 = 50</li>
+      <li>done_o = 1 (aynı cycle'da hazır)</li>
+    </ul>
+  </li>
+  <li><b>WB:</b> wb_sel=ALU, is_mdiv=1 → rd_data = mdiv_result = 50. reg[4] = 50.</li>
+  <li><b>PC:</b> PC = 0x10.</li>
+</ol>
+
+<p><b>Kritik not:</b> MUL kombinasyonel olduğu için <em>aynı cycle'da</em> tamamlanır. Datapath açısından ADDI'den farksız. Asıl multi-cycle olay DIV'de olur.</p>
+
+<h3>6.3 LW x6, 0(x0) (Load)</h3>
+
+<p>Encoding: <code>0x00002303</code></p>
+<ol>
+  <li><b>IF:</b> PC=0x18.</li>
+  <li><b>ID:</b>
+    <ul>
+      <li>opcode=0000011 (OP_LOAD), rd=6, rs1=0, funct3=010 (LW)</li>
+      <li>imm = 0 (I-type, 0'ın sign-extend'i)</li>
+      <li>Control Unit: reg_we=1, alu_a_sel=RS1, alu_b_sel=IMM, alu_op=ADD, <b>mem_re=1</b>, wb_sel=<b>MEM</b></li>
+    </ul>
+  </li>
+  <li><b>EX:</b> alu_result = 0+0 = 0 (bu DMEM adresi)</li>
+  <li><b>MEM:</b> dmem_addr=0, dmem_re=1, funct3=010 → DMEM[0] okunur. Önceki SW x3, 0(x0) tarafından 15 yazılmıştı. rdata=15.</li>
+  <li><b>WB:</b> wb_sel=MEM → rd_data = 15. reg[6] = 15.</li>
+  <li><b>PC:</b> 0x1c.</li>
+</ol>
+
+<h3>6.4 BEQ x1, x5, +8 (Conditional Branch, taken)</h3>
+
+<p>Encoding: <code>0x00508463</code></p>
+<ol>
+  <li><b>IF:</b> PC=0x1c.</li>
+  <li><b>ID:</b>
+    <ul>
+      <li>opcode=1100011 (OP_BRANCH), rs1=1, rs2=5, funct3=000 (BEQ)</li>
+      <li>imm = B-type sign-ext(8) = 32'd8</li>
+      <li>rs1_data = 5 (x1'den), rs2_data = 5 (x5'ten)</li>
+      <li>Control Unit: reg_we=0 (branch yazmaz!), alu_a_sel=<b>PC</b>, alu_b_sel=IMM, alu_op=ADD, is_branch=1, br_type=EQ</li>
+    </ul>
+  </li>
+  <li><b>EX (iki paralel iş):</b>
+    <ul>
+      <li>ALU: operand_a = PC = 0x1c, operand_b = imm = 8 → alu_result = 0x24 (branch target)</li>
+      <li>Branch Unit: rs1 (5) == rs2 (5) → taken = 1</li>
+    </ul>
+  </li>
+  <li><b>MEM/WB:</b> Yok. reg_we=0.</li>
+  <li><b>PC update:</b> is_branch=1 && br_taken=1 → pc_sel=PC_BRANCH → PC = 0x24.</li>
+</ol>
+
+<h3>6.5 JAL x0, +12 (Unconditional Jump)</h3>
+
+<p>Encoding: <code>0x00c0006f</code></p>
+<ol>
+  <li><b>IF:</b> PC=0x2c (örneğin).</li>
+  <li><b>ID:</b>
+    <ul>
+      <li>opcode=1101111 (OP_JAL), rd=0, imm = J-type sign-ext(12) = 32'd12</li>
+      <li>Control Unit: reg_we=1 (x0'a yazar ama regfile ignore eder), alu_a_sel=PC, alu_b_sel=IMM, alu_op=ADD, is_jal=1, wb_sel=<b>PC4</b></li>
+    </ul>
+  </li>
+  <li><b>EX:</b> ALU: PC + 12 → alu_result = 0x38 (jump target)</li>
+  <li><b>WB:</b> wb_sel=PC4 → rd_data = pc_plus4 = 0x30. Ama rd=0 olduğu için regfile ignore eder.</li>
+  <li><b>PC:</b> is_jal=1 → pc_sel=PC_BRANCH → PC = alu_result = 0x38.</li>
+</ol>
+
+<p><b>Neden JAL'da link register pc_plus4?</b> Çünkü fonksiyon çağrısı geri dönerken bir sonraki instruction'a (JAL'ın bir sonrası) dönmek ister. Bu yüzden <code>ra = x1 = PC + 4</code>. Bizim örneğimizde rd=0 olduğu için bu atılır (unconditional jump, return adresi önemsiz).</p>
+
+<h2>7. Critical Path — Tek-Çevrimin Hız Limiti</h2>
+
+<p>Tek-çevrimli mimaride clock periyodu, en uzun kombinasyonel yol tarafından belirlenir. Bizim datapath'imizde en uzun yol büyük olasılıkla:</p>
+
+<pre><code>PC → IMEM → Decoder → Regfile (read) → ALU_A_MUX → ALU (add) → DMEM (read) → WB_MUX → Regfile (setup time)</code></pre>
+
+<p>Yani bir <b>LW (load-word)</b> instruction'ı en kritik patlamadır çünkü hem ALU hem de DMEM bir cycle içinde olmak zorunda. Yaklaşık gecikmeler (Zybo Z7, Artix-7):</p>
+
+<table>
+  <tr><th>Eleman</th><th>Tahmini gecikme</th></tr>
+  <tr><td>IMEM BRAM read</td><td>~3 ns</td></tr>
+  <tr><td>Decode + control (combinational)</td><td>~2 ns</td></tr>
+  <tr><td>Regfile read (LUT-based)</td><td>~1 ns</td></tr>
+  <tr><td>ALU (add)</td><td>~3 ns</td></tr>
+  <tr><td>DMEM read</td><td>~3 ns</td></tr>
+  <tr><td>Writeback MUX + setup</td><td>~1 ns</td></tr>
+  <tr><td><b>Toplam</b></td><td><b>~13 ns → ~75 MHz</b></td></tr>
+</table>
+
+<p>Yani tek-çevrimli bu işlemci FPGA'de yaklaşık <b>75 MHz</b> clock kaldırabilir. Pipeline ile aynı donanımı 5 aşamaya bölüp her aşamayı en yavaş tek aşamaya (~3 ns) yaklaştırırsak, teorik olarak <b>250+ MHz</b>. Bu 3-4× speedup'ın <b>birincil motivasyonu</b>.</p>
+
+<h2>8. Sonraki Adım: Spike ile Doğrulama</h2>
+
+<p>Şu anda "doğru" dediğimiz değerler benim kafamdan hesapladığım. Bu "manuel verification". Sağlam verification için:</p>
+
+<ol>
+<li><b>Spike'ı kuracağız:</b> RISC-V resmî ISA simulator (C++ ile yazılmış, bit-exact).</li>
+<li><b>Aynı program.hex'i Spike'a vereceğiz:</b> Spike her instruction'dan sonra register dump verebilir.</li>
+<li><b>RTL simulasyonumuzdaki final register değerleriyle karşılaştıracağız:</b> Her register için Spike ve RTL eşleşirse test PASS.</li>
+<li><b>Gelişmiş: instruction-by-instruction trace:</b> Her commit'te register değişimlerini bit-exact karşılaştırmak (co-simulation).</li>
+</ol>
+
+<p>Bu yaklaşıma <b>ISA-level verification</b> veya <b>co-simulation</b> denir. RISC-V ekosisteminde standart yaklaşım budur. Spike çıktısı altın referanstır.</p>
+
+</body>
+</html>

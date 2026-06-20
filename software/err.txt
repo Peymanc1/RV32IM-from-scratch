@@ -1,0 +1,3 @@
+/home/dev-emru/xpack-riscv-none-elf-gcc-15.2.0-1/bin/../lib/gcc/riscv-none-elf/15.2.0/../../../../riscv-none-elf/bin/ld: /home/dev-emru/Desktop/RV32IM-from-scratch/software/raycaster.elf section `.eh_frame' will not fit in region `ROM'
+/home/dev-emru/xpack-riscv-none-elf-gcc-15.2.0-1/bin/../lib/gcc/riscv-none-elf/15.2.0/../../../../riscv-none-elf/bin/ld: region `ROM' overflowed by 28 bytes
+collect2: error: ld returned 1 exit status

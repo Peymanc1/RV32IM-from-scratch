@@ -1,0 +1,64 @@
+// dbg_hex.c  -  JTAG-free on-screen hex readout for bare-metal debugging.
+//
+// Renders a 32-bit value as 8 readable hex digits onto the HDMI framebuffer
+// (0xA, 8-bit palette indices; palette is grayscale during bring-up so 255=white).
+// Use dbg_show_hex(value, y) to print one value at screen row y. Far easier to
+// read off a monitor than 32 binary stripes, and it needs no working JTAG/mrd.
+
+#include <stdint.h>
+
+#define FB ((volatile uint8_t *)0xA0000000u)
+#define SCRW 320
+#define SCRH 200
+
+// 16 hex glyphs (0-F), 5 wide x 7 tall in an 8-row cell, low 5 bits = pixels
+// (bit4 = leftmost). Row 7 blank.
+static const unsigned char hexfont[16][8] = {
+    {0x0E,0x11,0x13,0x15,0x19,0x11,0x0E,0x00}, // 0
+    {0x04,0x0C,0x04,0x04,0x04,0x04,0x0E,0x00}, // 1
+    {0x0E,0x11,0x01,0x02,0x04,0x08,0x1F,0x00}, // 2
+    {0x1F,0x02,0x04,0x02,0x01,0x11,0x0E,0x00}, // 3
+    {0x02,0x06,0x0A,0x12,0x1F,0x02,0x02,0x00}, // 4
+    {0x1F,0x10,0x1E,0x01,0x01,0x11,0x0E,0x00}, // 5
+    {0x06,0x08,0x10,0x1E,0x11,0x11,0x0E,0x00}, // 6
+    {0x1F,0x01,0x02,0x04,0x08,0x08,0x08,0x00}, // 7
+    {0x0E,0x11,0x11,0x0E,0x11,0x11,0x0E,0x00}, // 8
+    {0x0E,0x11,0x11,0x0F,0x01,0x02,0x0C,0x00}, // 9
+    {0x0E,0x11,0x11,0x1F,0x11,0x11,0x11,0x00}, // A
+    {0x1E,0x11,0x11,0x1E,0x11,0x11,0x1E,0x00}, // B
+    {0x0E,0x11,0x10,0x10,0x10,0x11,0x0E,0x00}, // C
+    {0x1E,0x11,0x11,0x11,0x11,0x11,0x1E,0x00}, // D
+    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x1F,0x00}, // E
+    {0x1F,0x10,0x10,0x1E,0x10,0x10,0x10,0x00}, // F
+};
+
+static void draw_digit(int d, int px, int py, int s, unsigned char col)
+{
+    for (int row = 0; row < 8; row++) {
+        unsigned char bits = hexfont[d & 0xF][row];
+        for (int c = 0; c < 5; c++) {
+            if (bits & (1 << (4 - c))) {
+                for (int yy = 0; yy < s; yy++)
+                    for (int xx = 0; xx < s; xx++) {
+                        int x = px + c * s + xx, y = py + row * s + yy;
+                        if (x >= 0 && x < SCRW && y >= 0 && y < SCRH)
+                            FB[y * SCRW + x] = col;
+                    }
+            }
+        }
+    }
+}
+
+// Print one 32-bit value as 8 hex digits at screen row y (clears the band first).
+void dbg_show_hex(uint32_t v, int py)
+{
+    const int s = 2;                 // 2x scale -> 10x16 px per digit
+    const int h = 8 * s + 2;
+    for (int y = (py > 0 ? py - 1 : 0); y < py + h && y < SCRH; y++)
+        for (int x = 0; x < SCRW; x++)
+            FB[y * SCRW + x] = 0;
+    for (int i = 0; i < 8; i++) {
+        int d = (v >> ((7 - i) * 4)) & 0xF;
+        draw_digit(d, 4 + i * (6 * s + 2), py, s, 255);
+    }
+}

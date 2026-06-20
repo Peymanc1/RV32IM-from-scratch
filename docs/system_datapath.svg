@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1340 760" xmlns="http://www.w3.org/2000/svg" style="width:100%; height:auto;">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#0066cc"/></marker>
+    <marker id="ax" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#6a1b9a"/></marker>
+    <marker id="mm" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#2e7d32"/></marker>
+  </defs>
+
+  <!-- regions -->
+  <rect x="12" y="58" width="820" height="690" rx="8" fill="#e3f2fd" stroke="#64b5f6" stroke-dasharray="5 4"/>
+  <text x="28" y="80" font-size="15" font-weight="bold" fill="#1565c0">PL — Programmable Logic (synthesized circuit)</text>
+  <rect x="852" y="250" width="214" height="210" rx="8" fill="#fff3e0" stroke="#ffb74d" stroke-dasharray="5 4"/>
+  <text x="868" y="272" font-size="14" font-weight="bold" fill="#e65100">PS (ARM + hard IP)</text>
+
+  <!-- CPU -->
+  <rect x="40" y="300" width="185" height="180" rx="6" fill="#ede7f6" stroke="#5e35b1" stroke-width="2"/>
+  <text x="132" y="332" text-anchor="middle" font-size="15" font-weight="bold" fill="#4527a0">RV32IM</text>
+  <text x="132" y="352" text-anchor="middle" font-size="11">5-stage pipeline</text>
+  <text x="132" y="368" text-anchor="middle" font-size="10" fill="#666">(rv32im_doom_core)</text>
+  <text x="228" y="341" text-anchor="start" font-size="10" fill="#5e35b1">imem ▶</text>
+  <text x="228" y="448" text-anchor="start" font-size="10" fill="#5e35b1">dmem ▶</text>
+
+  <!-- I-cache / D-cache / mmio -->
+  <rect x="300" y="120" width="150" height="58" rx="4" fill="#fff" stroke="#1565c0" stroke-width="2"/>
+  <text x="375" y="145" text-anchor="middle" font-size="13" font-weight="bold">I-cache</text>
+  <text x="375" y="163" text-anchor="middle" font-size="10" fill="#666">read-only, 8 KB</text>
+
+  <rect x="300" y="320" width="150" height="58" rx="4" fill="#fff" stroke="#1565c0" stroke-width="2"/>
+  <text x="375" y="345" text-anchor="middle" font-size="13" font-weight="bold">D-cache</text>
+  <text x="375" y="363" text-anchor="middle" font-size="10" fill="#666">write-back, 8 KB</text>
+
+  <rect x="300" y="540" width="150" height="64" rx="4" fill="#fff" stroke="#2e7d32" stroke-width="2"/>
+  <text x="375" y="566" text-anchor="middle" font-size="13" font-weight="bold">mmio_bridge</text>
+  <text x="375" y="584" text-anchor="middle" font-size="10" fill="#666">address decode</text>
+
+  <!-- decode junction text -->
+  <text x="255" y="476" text-anchor="middle" font-size="9" fill="#888">decode</text>
+
+  <!-- burst masters -->
+  <rect x="510" y="120" width="155" height="58" rx="4" fill="#fff" stroke="#6a1b9a" stroke-width="2"/>
+  <text x="587" y="143" text-anchor="middle" font-size="12" font-weight="bold">axi_burst_master</text>
+  <text x="587" y="161" text-anchor="middle" font-size="10" fill="#666">line ↔ AXI burst</text>
+
+  <rect x="510" y="320" width="155" height="58" rx="4" fill="#fff" stroke="#6a1b9a" stroke-width="2"/>
+  <text x="587" y="343" text-anchor="middle" font-size="12" font-weight="bold">axi_burst_master</text>
+  <text x="587" y="361" text-anchor="middle" font-size="10" fill="#666">line ↔ AXI burst</text>
+
+  <!-- SmartConnect -->
+  <rect x="700" y="150" width="115" height="248" rx="6" fill="#ede7f6" stroke="#5e35b1" stroke-width="2"/>
+  <text x="757" y="262" text-anchor="middle" font-size="12" font-weight="bold" fill="#4527a0">Smart-</text>
+  <text x="757" y="280" text-anchor="middle" font-size="12" font-weight="bold" fill="#4527a0">Connect</text>
+  <text x="757" y="300" text-anchor="middle" font-size="10" fill="#666">2 → 1</text>
+
+  <!-- video path -->
+  <rect x="510" y="540" width="155" height="64" rx="4" fill="#fff" stroke="#2e7d32" stroke-width="2"/>
+  <text x="587" y="566" text-anchor="middle" font-size="12" font-weight="bold">video_fb</text>
+  <text x="587" y="584" text-anchor="middle" font-size="10" fill="#666">fb + palette + timing</text>
+
+  <rect x="700" y="540" width="100" height="64" rx="4" fill="#fff" stroke="#2e7d32" stroke-width="2"/>
+  <text x="750" y="572" text-anchor="middle" font-size="12" font-weight="bold">rgb2dvi</text>
+  <text x="750" y="588" text-anchor="middle" font-size="9" fill="#666">TMDS</text>
+
+  <!-- PS: DDR controller -->
+  <rect x="868" y="300" width="180" height="80" rx="4" fill="#ffe0b2" stroke="#e65100" stroke-width="2"/>
+  <text x="958" y="332" text-anchor="middle" font-size="12" font-weight="bold">DDR controller</text>
+  <text x="958" y="350" text-anchor="middle" font-size="10" fill="#666">(maps address to row/col/</text>
+  <text x="958" y="364" text-anchor="middle" font-size="10" fill="#666">bank)</text>
+
+  <!-- external DDR chip -->
+  <rect x="1085" y="250" width="240" height="210" rx="10" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2"/>
+  <text x="1205" y="276" text-anchor="middle" font-size="13" font-weight="bold" fill="#2e7d32">DDR chip (1 GB)</text>
+  <text x="1100" y="304" font-size="11" font-family="monospace">0x10000000  .text/.rodata/.data</text>
+  <text x="1100" y="326" font-size="11" font-family="monospace">_end ..      heap (DOOM zone)</text>
+  <text x="1100" y="348" font-size="11" font-family="monospace">0x14000000  stack ↓</text>
+  <text x="1100" y="370" font-size="11" font-family="monospace">0x18000000  DOOM1.WAD</text>
+  <text x="1100" y="400" font-size="10" fill="#666">(XSCT `dow` loads it over JTAG;</text>
+  <text x="1100" y="416" font-size="10" fill="#666"> CPU reads it via its caches)</text>
+
+  <!-- external HDMI -->
+  <polygon points="850,545 970,545 950,599 830,599" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2"/>
+  <text x="900" y="578" text-anchor="middle" font-size="12" font-weight="bold" fill="#2e7d32">HDMI</text>
+
+  <!-- external switch/LED -->
+  <rect x="300" y="650" width="150" height="46" rx="4" fill="#e8f5e9" stroke="#2e7d32" stroke-width="2"/>
+  <text x="375" y="670" text-anchor="middle" font-size="11" font-weight="bold">4 switch / 4 LED</text>
+  <text x="375" y="686" text-anchor="middle" font-size="9" fill="#666">board pins</text>
+
+  <!-- ===== arrows ===== -->
+  <!-- imem -> I-cache -->
+  <path d="M225,345 H262 V149 H300" fill="none" stroke="#0066cc" stroke-width="2" marker-end="url(#a)"/>
+  <text x="270" y="112" font-size="10" fill="#0066cc">fetch • 0x1xxxxxxx</text>
+  <!-- dmem -> D-cache -->
+  <path d="M225,452 H272 V349 H300" fill="none" stroke="#0066cc" stroke-width="2" marker-end="url(#a)"/>
+  <text x="276" y="312" font-size="10" fill="#0066cc">0x1xxxxxxx</text>
+  <!-- dmem -> mmio -->
+  <path d="M272,452 V572 H300" fill="none" stroke="#2e7d32" stroke-width="2" marker-end="url(#mm)"/>
+  <text x="200" y="520" font-size="10" fill="#2e7d32">0x9 / 0xA / 0xB</text>
+  <!-- I-cache -> I-burst -->
+  <path d="M450,149 H510" fill="none" stroke="#0066cc" stroke-width="2" marker-end="url(#a)"/>
+  <text x="455" y="113" font-size="9" fill="#666">32 B line</text>
+  <!-- D-cache -> D-burst -->
+  <path d="M450,349 H510" fill="none" stroke="#0066cc" stroke-width="2" marker-end="url(#a)"/>
+  <!-- I-burst -> SC -->
+  <path d="M665,149 H685 V230 H700" fill="none" stroke="#6a1b9a" stroke-width="2" marker-end="url(#ax)"/>
+  <text x="640" y="200" font-size="10" fill="#6a1b9a">AXI4</text>
+  <!-- D-burst -> SC -->
+  <path d="M665,349 H700" fill="none" stroke="#6a1b9a" stroke-width="2" marker-end="url(#ax)"/>
+  <!-- SC -> DDR ctrl -->
+  <path d="M815,300 H842 V340 H868" fill="none" stroke="#6a1b9a" stroke-width="2" marker-end="url(#ax)"/>
+  <text x="818" y="285" font-size="10" fill="#6a1b9a">S_AXI_HP (64-bit)</text>
+  <!-- DDR ctrl -> DDR chip -->
+  <path d="M1048,340 H1085" fill="none" stroke="#6a1b9a" stroke-width="2" marker-end="url(#ax)"/>
+  <!-- mmio -> video_fb -->
+  <path d="M450,572 H510" fill="none" stroke="#2e7d32" stroke-width="2" marker-end="url(#mm)"/>
+  <text x="452" y="534" font-size="10" fill="#2e7d32">0xA fb / 0xB palette</text>
+  <!-- video_fb -> rgb2dvi -->
+  <path d="M665,572 H700" fill="none" stroke="#2e7d32" stroke-width="2" marker-end="url(#mm)"/>
+  <!-- rgb2dvi -> HDMI -->
+  <path d="M800,572 H850 V565" fill="none" stroke="#2e7d32" stroke-width="2" marker-end="url(#mm)"/>
+  <!-- mmio <-> switch/LED -->
+  <path d="M375,604 V650" fill="none" stroke="#2e7d32" stroke-width="2" marker-end="url(#mm)" marker-start="url(#mm)"/>
+  <text x="385" y="630" font-size="9" fill="#2e7d32">0x90000000 LED / ..08 switches</text>
+</svg>
